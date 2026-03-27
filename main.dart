@@ -1,1458 +1,483 @@
-
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-// ==========================================
-// 1. CONSTANTS & CONFIGURATION
-// ==========================================
+void main() => runApp(const GyroadApp());
 
-const int ROWS = 8;
-const int COLS = 7;
-const int WIN_SCORE = 6;
-const int LAYER_DELAY_MS = 80;
-const int STEP_DURATION_MS = 240;
+const int ROWS = 8; const int COLS = 7; const int WIN_SCORE = 6;
+const int LAYER_DELAY_MS = 80; const int STEP_DURATION_MS = 240;
 
-// Colors matching CSS theme
-const Color bgColor = Color(0xFF1A1A1A);
-const Color boardBg = Color(0xFF2A2235);
-const Color cellColor = Color(0xFF584A73);
-const Color cellHoverColor = Color(0xFF6A5A87);
-const Color borderColor = Color(0xFF3B314A);
-const Color selectedColor = Color(0xFF9370DB);
-const Color availableColor = Color(0xFFD8B4FE);
-const Color swapColor = Color(0xFFFFB3C1);
-const Color metalBaseColor = Color(0xFF9AA0B8);
-const Color metalHighlightColor = Color(0xFFEDEAF9);
+const Color bgColor = Color(0xFF1A1A1A); const Color boardBg = Color(0xFF2A2235);
+const Color cellColor = Color(0xFF584A73); const Color cellHoverColor = Color(0xFF6A5A87);
+const Color borderColor = Color(0xFF3B314A); const Color selectedColor = Color(0xFF9370DB);
+const Color availableColor = Color(0xFFD8B4FE); const Color swapColor = Color(0xFFFFB3C1);
+const Color metalBaseColor = Color(0xFF9AA0B8); const Color metalHighlightColor = Color(0xFFEDEAF9);
 const Color metalShadowColor = Color(0xFF454B61);
 
-class TeamTheme {
-  final Color color;
-  final Color glow;
-  const TeamTheme(this.color, this.glow);
-}
-
+class TeamTheme { final Color color, glow; const TeamTheme(this.color, this.glow); }
 const TeamTheme purpleTheme = TeamTheme(Color(0xFFA87CFF), Color(0xFFEAD8FF));
 const TeamTheme orangeTheme = TeamTheme(Color(0xFFFF6B6B), Color(0xFFFFD6D6));
 
-// AI Evaluation Weights
-const Map<String, int> BASE_WEIGHTS = {
-  'WIN': 1000000, 'POINT': 15000, 'CAPTURE_CIRCLE': 8000, 'PIECE_P': 100,
-  'PIECE_D': 350, 'PIECE_C': 600, 'ADVANCEMENT': 20, 'CENTER_CONTROL': 30,
-  'THREATENED': -200, 'IMMOBILIZE_ENEMY': 500, 'IMMOBILIZED_SELF': -400,
-};
-
-final Map<String, int> PURPLE_WEIGHTS = {
-  ...BASE_WEIGHTS, 'CENTER_CONTROL': 40, 'PIECE_P': 110
-};
-final Map<String, int> ORANGE_WEIGHTS = {
-  ...BASE_WEIGHTS, 'PIECE_D': 370, 'THREATENED': -250
-};
-
-// ==========================================
-// 2. DATA MODELS
-// ==========================================
+final Map<String, int> PURPLE_WEIGHTS = {'WIN': 1000000, 'POINT': 15000, 'CAPTURE_CIRCLE': 8000, 'PIECE_P': 110, 'PIECE_D': 350, 'PIECE_C': 600, 'ADVANCEMENT': 20, 'CENTER_CONTROL': 40, 'THREATENED': -200, 'IMMOBILIZE_ENEMY': 500, 'IMMOBILIZED_SELF': -400};
+final Map<String, int> ORANGE_WEIGHTS = {'WIN': 1000000, 'POINT': 15000, 'CAPTURE_CIRCLE': 8000, 'PIECE_P': 100, 'PIECE_D': 370, 'PIECE_C': 600, 'ADVANCEMENT': 20, 'CENTER_CONTROL': 30, 'THREATENED': -250, 'IMMOBILIZE_ENEMY': 500, 'IMMOBILIZED_SELF': -400};
 
 class PieceConfig {
-  final String id;
-  final String type;
-  final List<String> directions;
-  final List<String> jumpDirections;
-
-  const PieceConfig({
-    required this.id, required this.type, required this.directions, this.jumpDirections = const [],
-  });
+  final String id, type; final List<String> directions, jumpDirections;
+  const PieceConfig(this.id, this.type, this.directions, [this.jumpDirections = const []]);
 }
-
-const List<PieceConfig> PIECE_CONFIGS =[
-  PieceConfig(id: 'PR', type: 'P', directions: ['w', 'se']),
-  PieceConfig(id: 'PL', type: 'P', directions: ['e', 'sw']),
-  PieceConfig(id: 'PX', type: 'P', directions: ['nw', 'ne', 'sw', 'se']),
-  PieceConfig(id: 'DP', type: 'D', directions: ['n', 'w', 'e']),
-  PieceConfig(id: 'DT', type: 'D', directions:['n', 'nw', 'ne', 's']),
-  PieceConfig(id: 'DN', type: 'D', directions:['n', 's', 'w', 'e'], jumpDirections: ['w', 'e']),
-  PieceConfig(id: 'C', type: 'C', directions: ['n', 'sw', 'se']),
-];
-
-final Map<String, PieceConfig> CONFIG_BY_ID = {
-  for (var config in PIECE_CONFIGS) config.id: config
+const Map<String, PieceConfig> CONFIG_BY_ID = {
+  'PR': PieceConfig('PR', 'P', ['w', 'se']), 'PL': PieceConfig('PL', 'P', ['e', 'sw']),
+  'PX': PieceConfig('PX', 'P', ['nw', 'ne', 'sw', 'se']), 'DP': PieceConfig('DP', 'D', ['n', 'w', 'e']),
+  'DT': PieceConfig('DT', 'D', ['n', 'nw', 'ne', 's']), 'DN': PieceConfig('DN', 'D',['n', 's', 'w', 'e'], ['w', 'e']),
+  'C':  PieceConfig('C', 'C', ['n', 'sw', 'se']),
 };
 
-class SetupPos {
-  final String id; final int row; final int col;
-  const SetupPos(this.id, this.row, this.col);
-}
-
-const List<SetupPos> PURPLE_SETUP =[
-  SetupPos('PR', 6, 0), SetupPos('PL', 6, 1), SetupPos('PR', 6, 2), SetupPos('PX', 6, 3),
-  SetupPos('PL', 6, 4), SetupPos('PR', 6, 5), SetupPos('PL', 6, 6), SetupPos('DP', 7, 0),
-  SetupPos('DT', 7, 1), SetupPos('DN', 7, 2), SetupPos('C', 7, 3), SetupPos('DN', 7, 4),
-  SetupPos('DT', 7, 5), SetupPos('DP', 7, 6),
-];
-
-const List<SetupPos> ORANGE_SETUP =[
-  SetupPos('PL', 1, 0), SetupPos('PR', 1, 1), SetupPos('PL', 1, 2), SetupPos('PX', 1, 3),
-  SetupPos('PR', 1, 4), SetupPos('PL', 1, 5), SetupPos('PR', 1, 6), SetupPos('DP', 0, 0),
-  SetupPos('DT', 0, 1), SetupPos('DN', 0, 2), SetupPos('C', 0, 3), SetupPos('DN', 0, 4),
-  SetupPos('DT', 0, 5), SetupPos('DP', 0, 6),
-];
-
 class PieceData {
-  String id;
-  String type;
-  String team;
-  int rotation;
-  int immobilizedTurn;
-  int uid;
-
-  PieceData({
-    required this.id, required this.type, required this.team,
-    this.rotation = 0, this.immobilizedTurn = 0, required this.uid,
-  });
-
-  PieceData clone() => PieceData(
-      id: id, type: type, team: team, rotation: rotation,
-      immobilizedTurn: immobilizedTurn, uid: uid);
+  String id, type, team; int rotation, immobilizedTurn, uid;
+  PieceData({required this.id, required this.type, required this.team, this.rotation = 0, this.immobilizedTurn = 0, required this.uid});
+  PieceData clone() => PieceData(id: id, type: type, team: team, rotation: rotation, immobilizedTurn: immobilizedTurn, uid: uid);
 }
 
 class Coordinate {
-  final int r; final int c;
-  const Coordinate(this.r, this.c);
-  @override bool operator ==(Object other) => other is Coordinate && r == other.r && c == other.c;
+  final int r, c; const Coordinate(this.r, this.c);
+  @override bool operator ==(Object o) => o is Coordinate && r == o.r && c == o.c;
   @override int get hashCode => Object.hash(r, c);
 }
 
 class MoveAction {
-  final Coordinate from; final Coordinate to;
-  final bool isSwap; final int preMoveRotation;
-  int scoreVal;
-  MoveAction({required this.from, required this.to, required this.isSwap, required this.preMoveRotation, this.scoreVal = 0});
+  final Coordinate from, to; final bool isSwap; final int preMoveRotation; int scoreVal;
+  MoveAction(this.from, this.to, this.isSwap, this.preMoveRotation, [this.scoreVal = 0]);
 }
 
 class GameSnapshot {
-  final List<List<PieceData?>> board;
-  final int purpleScore;
-  final int orangeScore;
-  final int turnCount;
-  final String currentTurn;
-  final List<String> fullNotation;
-
-  GameSnapshot({
-    required this.board, required this.purpleScore, required this.orangeScore,
-    required this.turnCount, required this.currentTurn, required this.fullNotation,
-  });
+  final List<List<PieceData?>> board; final int pScore, oScore, turnCount;
+  final String currentTurn; final List<String> notation;
+  GameSnapshot(this.board, this.pScore, this.oScore, this.turnCount, this.currentTurn, this.notation);
 }
 
-// ==========================================
-// 3. GAME LOGIC & PATHFINDING (BFS)
-// ==========================================
-
 class GameLogic {
-  static Map<String, List<int>> getUnitVectors(String team) {
-    if (team == 'orange') return {'up': [1, 0], 'down': [-1, 0], 'left': [0, 1], 'right': [0, -1]};
-    return {'up': [-1, 0], 'down': [1, 0], 'left': [0, -1], 'right': [0, 1]};
-  }
-
-  static Map<String, List<int>> getRotatedUnitVectors(String team, int rotation) {
-    var base = getUnitVectors(team);
-    List<List<int>> vectors = [base['up']!, base['right']!, base['down']!, base['left']!];
-    int shift = ((rotation / 90) % 4).floor();
-    return {
-      'up': vectors[shift], 'right': vectors[(shift + 1) % 4],
-      'down': vectors[(shift + 2) % 4], 'left': vectors[(shift + 3) % 4]
-    };
-  }
-
-  static List<Coordinate> getImmediateMoves(int r, int c, PieceData piece, [int? customRotation]) {
-    int rotation = customRotation ?? piece.rotation;
-    var v = getRotatedUnitVectors(piece.team, rotation);
+  static List<Coordinate> getImmediateMoves(int r, int c, PieceData p, [int? customRot]) {
+    int rot = customRot ?? p.rotation;
+    int shift = ((rot / 90) % 4).floor();
+    var b = p.team == 'orange' ? [[1,0], [0,-1], [-1,0], [0,1]] : [[-1,0], [0,1], [1,0], [0,-1]];
+    var v = {'up': b[shift], 'right': b[(shift+1)%4], 'down': b[(shift+2)%4], 'left': b[(shift+3)%4]};
+    
     List<Coordinate> moves =[];
-
-    void push(List<int> d) {
-      int rr = r + d[0], cc = c + d[1];
-      if (rr >= 0 && rr < ROWS && cc >= 0 && cc < COLS) moves.add(Coordinate(rr, cc));
-    }
+    void push(List<int> d) { int rr = r + d[0], cc = c + d[1]; if (rr >= 0 && rr < ROWS && cc >= 0 && cc < COLS) moves.add(Coordinate(rr, cc)); }
     List<int> add(List<int> a, List<int> b) => [a[0] + b[0], a[1] + b[1]];
     List<int> mul(List<int> a, int k) => [a[0] * k, a[1] * k];
 
-    String t = piece.id;
-    if (t == 'PR') { push(v['left']!); push(add(v['right']!, v['down']!)); }
-    else if (t == 'PL') { push(v['right']!); push(add(v['left']!, v['down']!)); }
-    else if (t == 'PX') { push(add(v['right']!, v['up']!)); push(add(v['right']!, v['down']!)); push(add(v['left']!, v['up']!)); push(add(v['left']!, v['down']!)); }
-    else if (t == 'DP') { push(v['up']!); push(mul(v['up']!, 2)); push(v['left']!); push(v['right']!); }
-    else if (t == 'DT') { push(v['up']!); push(add(v['up']!, v['left']!)); push(add(v['up']!, v['right']!)); push(v['down']!); }
-    else if (t == 'DN') { push(v['up']!); push(v['down']!); push(mul(v['left']!, 2)); push(mul(v['right']!, 2)); }
-    else if (t == 'C') { push(v['up']!); push(add(v['down']!, v['left']!)); push(add(v['down']!, v['right']!)); }
-
+    if (p.id == 'PR') { push(v['left']!); push(add(v['right']!, v['down']!)); }
+    else if (p.id == 'PL') { push(v['right']!); push(add(v['left']!, v['down']!)); }
+    else if (p.id == 'PX') { push(add(v['right']!, v['up']!)); push(add(v['right']!, v['down']!)); push(add(v['left']!, v['up']!)); push(add(v['left']!, v['down']!)); }
+    else if (p.id == 'DP') { push(v['up']!); push(mul(v['up']!, 2)); push(v['left']!); push(v['right']!); }
+    else if (p.id == 'DT') { push(v['up']!); push(add(v['up']!, v['left']!)); push(add(v['up']!, v['right']!)); push(v['down']!); }
+    else if (p.id == 'DN') { push(v['up']!); push(v['down']!); push(mul(v['left']!, 2)); push(mul(v['right']!, 2)); }
+    else if (p.id == 'C')  { push(v['up']!); push(add(v['down']!, v['left']!)); push(add(v['down']!, v['right']!)); }
     return moves;
   }
 
-  static List<List<Set<Coordinate>>> getAccessibleHighlightLayers(List<List<PieceData?>> board, int sr, int sc,[int? customRot]) {
-    PieceData originPiece = board[sr][sc]!;
-    Coordinate originCoord = Coordinate(sr, sc);
-    List<List<Set<Coordinate>>> layers =[];
-    Set<Coordinate> visitedPieces = {originCoord};
-    Set<Coordinate> visitedPositions = {};
-    Set<Coordinate> currentLayerPieces = {originCoord};
+  static List<List<Set<Coordinate>>> getHighlightLayers(List<List<PieceData?>> board, int sr, int sc, [int? customRot]) {
+    PieceData origin = board[sr][sc]!; Set<Coordinate> vPieces = {Coordinate(sr, sc)}, vPos = {};
+    Set<Coordinate> currLayer = {Coordinate(sr, sc)}; List<List<Set<Coordinate>>> layers =[];
 
-    while (currentLayerPieces.isNotEmpty) {
-      Set<Coordinate> emptyLayer = {};
-      Set<Coordinate> occupiedLayer = {};
-      Set<Coordinate> nextLayerPieces = {};
-
-      for (var curr in currentLayerPieces) {
-        PieceData currPiece = board[curr.r][curr.c]!;
-        bool isOrigin = curr.r == sr && curr.c == sc;
-        var immed = getImmediateMoves(curr.r, curr.c, currPiece, isOrigin ? customRot : null);
-
-        for (var target in immed) {
-          if (target == originCoord || visitedPositions.contains(target)) continue;
-          PieceData? targetData = board[target.r][target.c];
-
-          if (targetData != null) {
-            occupiedLayer.add(target);
-            if (targetData.team == originPiece.team && !visitedPieces.contains(target)) {
-              visitedPieces.add(target);
-              nextLayerPieces.add(target);
-            }
-          } else if (!isOrigin) {
-            emptyLayer.add(target);
-          }
+    while (currLayer.isNotEmpty) {
+      Set<Coordinate> empty = {}, occupied = {}, next = {};
+      for (var curr in currLayer) {
+        bool isO = curr.r == sr && curr.c == sc;
+        for (var t in getImmediateMoves(curr.r, curr.c, board[curr.r][curr.c]!, isO ? customRot : null)) {
+          if (t == Coordinate(sr, sc) || vPos.contains(t)) continue;
+          if (board[t.r][t.c] != null) {
+            occupied.add(t);
+            if (board[t.r][t.c]!.team == origin.team && !vPieces.contains(t)) { vPieces.add(t); next.add(t); }
+          } else if (!isO) empty.add(t);
         }
       }
-
-      if (emptyLayer.isNotEmpty || occupiedLayer.isNotEmpty) {
-        layers.add([emptyLayer, occupiedLayer]);
-      }
-      visitedPositions.addAll(emptyLayer);
-      visitedPositions.addAll(occupiedLayer);
-      currentLayerPieces = nextLayerPieces;
+      if (empty.isNotEmpty || occupied.isNotEmpty) layers.add([empty, occupied]);
+      vPos.addAll(empty); vPos.addAll(occupied); currLayer = next;
     }
     return layers;
   }
 
-  static List<Coordinate>? findMovementPath(List<List<PieceData?>> board, int sr, int sc, int dr, int dc,[int? customRot]) {
-    PieceData startPiece = board[sr][sc]!;
-    List<Map<String, dynamic>> queue = [{'pos': Coordinate(sr, sc), 'path':[Coordinate(sr, sc)]}];
+  static List<Coordinate> findPath(List<List<PieceData?>> board, int sr, int sc, int dr, int dc, [int? customRot]) {
+    List<Map<String, dynamic>> queue = [{'pos': Coordinate(sr, sc), 'path': [Coordinate(sr, sc)]}];
     Set<Coordinate> visited = {Coordinate(sr, sc)};
-
     while (queue.isNotEmpty) {
-      var current = queue.removeAt(0);
-      Coordinate pos = current['pos'];
-      List<Coordinate> path = List<Coordinate>.from(current['path']);
-      PieceData currentPiece = board[pos.r][pos.c]!;
-      bool isStart = pos.r == sr && pos.c == sc;
-
-      var moves = getImmediateMoves(pos.r, pos.c, currentPiece, isStart ? customRot : null);
-      for (var target in moves) {
-        if (target.r == dr && target.c == dc) {
-          path.add(target);
-          return path;
-        }
-        PieceData? targetP = board[target.r][target.c];
-        if (targetP != null && targetP.team == startPiece.team && !visited.contains(target)) {
-          visited.add(target);
-          List<Coordinate> newPath = List<Coordinate>.from(path)..add(target);
-          queue.add({'pos': target, 'path': newPath});
+      var curr = queue.removeAt(0); Coordinate pos = curr['pos']; List<Coordinate> path = List.from(curr['path']);
+      for (var t in getImmediateMoves(pos.r, pos.c, board[pos.r][pos.c]!, (pos.r == sr && pos.c == sc) ? customRot : null)) {
+        if (t.r == dr && t.c == dc) return path..add(t);
+        if (board[t.r][t.c] != null && board[t.r][t.c]!.team == board[sr][sc]!.team && !visited.contains(t)) {
+          visited.add(t); queue.add({'pos': t, 'path': List.from(path)..add(t)});
         }
       }
     }
-    return [Coordinate(sr, sc), Coordinate(dr, dc)]; // Fallback
+    return[Coordinate(sr, sc), Coordinate(dr, dc)];
   }
 }
 
-// ==========================================
-// 4. ALPHA-BETA MINIMAX AI ENGINE
-// ==========================================
-
 class AIEngine {
-  static List<List<PieceData?>> cloneBoard(List<List<PieceData?>> board) {
-    return board.map((row) => row.map((p) => p?.clone()).toList()).toList();
-  }
-
-  static List<MoveAction> generateMoves(List<List<PieceData?>> board, String team, int turnCount) {
+  static List<List<PieceData?>> cloneBoard(List<List<PieceData?>> b) => b.map((r) => r.map((p) => p?.clone()).toList()).toList();
+  static List<MoveAction> genMoves(List<List<PieceData?>> board, String team, int tCount) {
     List<MoveAction> moves =[];
     for (int r = 0; r < ROWS; r++) {
       for (int c = 0; c < COLS; c++) {
-        PieceData? piece = board[r][c];
-        if (piece == null || piece.team != team || (piece.immobilizedTurn > turnCount)) continue;
-
-        List<int> rotations = (piece.type == 'D') ?[0, 90, 180, 270] : [piece.rotation];
-
-        for (int rot in rotations) {
-          List<Coordinate> queue = [Coordinate(r, c)];
-          Set<Coordinate> visited = {Coordinate(r, c)};
-          int head = 0;
-
-          while (head < queue.length) {
-            Coordinate curr = queue[head++];
-            PieceData currentP = board[curr.r][curr.c]!;
-            int effRot = (curr.r == r && curr.c == c) ? rot : currentP.rotation;
-            var neighbors = GameLogic.getImmediateMoves(curr.r, curr.c, currentP, effRot);
-
-            for (var target in neighbors) {
-              PieceData? targetP = board[target.r][target.c];
-
-              if (targetP != null) {
-                if (targetP.team != team) {
-                  moves.add(MoveAction(from: Coordinate(r, c), to: target, isSwap: true, preMoveRotation: rot));
-                } else if (!visited.contains(target)) {
-                  visited.add(target);
-                  queue.add(target);
-                }
-              } else if (!visited.contains(target) && !(curr.r == r && curr.c == c)) {
-                moves.add(MoveAction(from: Coordinate(r, c), to: target, isSwap: false, preMoveRotation: rot));
+        PieceData? p = board[r][c];
+        if (p == null || p.team != team || p.immobilizedTurn > tCount) continue;
+        for (int rot in (p.type == 'D' ? [0, 90, 180, 270] :[p.rotation])) {
+          List<Coordinate> q = [Coordinate(r, c)]; Set<Coordinate> vis = {Coordinate(r, c)}; int head = 0;
+          while (head < q.length) {
+            Coordinate curr = q[head++];
+            for (var t in GameLogic.getImmediateMoves(curr.r, curr.c, board[curr.r][curr.c]!, (curr.r == r && curr.c == c) ? rot : null)) {
+              if (board[t.r][t.c] != null) {
+                if (board[t.r][t.c]!.team != team) moves.add(MoveAction(Coordinate(r, c), t, true, rot, 1000 + (team == 'purple' ? 7 - t.r : t.r)));
+                else if (!vis.contains(t)) { vis.add(t); q.add(t); }
+              } else if (!vis.contains(t) && !(curr.r == r && curr.c == c)) {
+                moves.add(MoveAction(Coordinate(r, c), t, false, rot, team == 'purple' ? 7 - t.r : t.r));
               }
             }
           }
         }
       }
     }
-
-    for (var m in moves) {
-      int val = 0;
-      if (m.isSwap) val += 1000;
-      int dist = (team == 'purple') ? (7 - m.to.r) : m.to.r;
-      val += dist;
-      m.scoreVal = val;
-    }
-    moves.sort((a, b) => b.scoreVal.compareTo(a.scoreVal));
-    return moves;
+    moves.sort((a, b) => b.scoreVal.compareTo(a.scoreVal)); return moves;
   }
 
-  static int evaluateBoard(List<List<PieceData?>> board, String team, int purpleScore, int orangeScore, int turnCount) {
-    Map<String, int> w = (team == 'purple') ? PURPLE_WEIGHTS : ORANGE_WEIGHTS;
-    int score = 0;
-    int myScore = team == 'orange' ? orangeScore : purpleScore;
-    int oppScore = team == 'orange' ? purpleScore : orangeScore;
-
-    if (myScore >= WIN_SCORE) return w['WIN']!;
-    if (oppScore >= WIN_SCORE) return -w['WIN']!;
-    score += (myScore - oppScore) * w['POINT']!;
-
+  static int eval(List<List<PieceData?>> b, String t, int pS, int oS, int tC) {
+    Map<String, int> w = t == 'purple' ? PURPLE_WEIGHTS : ORANGE_WEIGHTS; int score = 0;
+    if ((t == 'orange' ? oS : pS) >= WIN_SCORE) return w['WIN']!;
+    if ((t == 'orange' ? pS : oS) >= WIN_SCORE) return -w['WIN']!;
+    score += ((t == 'orange' ? oS : pS) - (t == 'orange' ? pS : oS)) * w['POINT']!;
     for (int r = 0; r < ROWS; r++) {
       for (int c = 0; c < COLS; c++) {
-        PieceData? p = board[r][c];
-        if (p == null) continue;
-
-        bool isMe = p.team == team;
+        if (b[r][c] == null) continue; PieceData p = b[r][c]!; bool isMe = p.team == t; int pos = 0;
         int val = p.type == 'P' ? w['PIECE_P']! : (p.type == 'D' ? w['PIECE_D']! : w['PIECE_C']!);
-        int posVal = 0;
-
         if (p.type == 'P') {
-          int steps = p.team == 'purple' ? (6 - r) : (r - 1);
-          posVal += steps * steps * w['ADVANCEMENT']!;
-          if (!isMe && ((p.team == 'purple' && r == 1) || (p.team == 'orange' && r == 6))) {
-            score -= 5000;
-          }
+          pos += (p.team == 'purple' ? 6 - r : r - 1) * (p.team == 'purple' ? 6 - r : r - 1) * w['ADVANCEMENT']!;
+          if (!isMe && ((p.team == 'purple' && r == 1) || (p.team == 'orange' && r == 6))) score -= 5000;
         }
-
-        if (c >= 2 && c <= 4) posVal += w['CENTER_CONTROL']!;
-        if (p.immobilizedTurn > turnCount) {
-          posVal += isMe ? w['IMMOBILIZED_SELF']! : w['IMMOBILIZE_ENEMY']!;
-        }
-
-        if (isMe) score += val + posVal;
-        else score -= (val + posVal);
+        if (c >= 2 && c <= 4) pos += w['CENTER_CONTROL']!;
+        if (p.immobilizedTurn > tC) pos += isMe ? w['IMMOBILIZED_SELF']! : w['IMMOBILIZE_ENEMY']!;
+        score += isMe ? (val + pos) : -(val + pos);
       }
     }
     return score;
   }
 
-  static Map<String, dynamic> applyMoveSim(List<List<PieceData?>> board, MoveAction m, int turnCount, int pScore, int oScore) {
-    PieceData movingP = board[m.from.r][m.from.c]!.clone();
-    movingP.rotation = m.preMoveRotation;
-    PieceData? targetP = board[m.to.r][m.to.c]?.clone();
-
-    int scoreAdd = 0;
-    bool removeMoving = false;
-    bool removeTarget = false;
-
-    if (m.isSwap && movingP.type == 'C' && targetP?.type == 'C') {
-      removeTarget = true;
-      scoreAdd += 2;
-    }
-
-    int promoRow = movingP.team == 'purple' ? 0 : ROWS - 1;
-    if (movingP.type == 'P' && m.to.r == promoRow) {
-      removeMoving = true;
-      if (movingP.id != 'PX') scoreAdd = scoreAdd > 0 ? scoreAdd : 1;
-    }
-
-    if (movingP.team == 'purple') pScore += scoreAdd;
-    else oScore += scoreAdd;
-
-    board[m.from.r][m.from.c] = null;
-    if (m.isSwap && !removeTarget) {
-      targetP!.immobilizedTurn = turnCount + 2;
-      board[m.from.r][m.from.c] = targetP;
-    }
-    board[m.to.r][m.to.c] = removeMoving ? null : movingP;
-
-    return {'pScore': pScore, 'oScore': oScore};
+  static Map<String, int> applySim(List<List<PieceData?>> b, MoveAction m, int tC, int pS, int oS) {
+    PieceData p = b[m.from.r][m.from.c]!.clone()..rotation = m.preMoveRotation; PieceData? t = b[m.to.r][m.to.c]?.clone();
+    int add = 0; bool rm = false, rt = false;
+    if (m.isSwap && p.type == 'C' && t?.type == 'C') { rt = true; add += 2; }
+    if (p.type == 'P' && m.to.r == (p.team == 'purple' ? 0 : ROWS - 1)) { rm = true; if (p.id != 'PX' && add == 0) add = 1; }
+    if (p.team == 'purple') pS += add; else oS += add;
+    b[m.from.r][m.from.c] = (m.isSwap && !rt) ? (t!..immobilizedTurn = tC + 2) : null;
+    b[m.to.r][m.to.c] = rm ? null : p;
+    return {'p': pS, 'o': oS};
   }
 
-  static int nodesVisited = 0;
+  static int nodes = 0;
+  static int minimax(List<List<PieceData?>> b, int d, int alpha, int beta, bool max, int tC, int pS, int oS, String botT, int sT, int maxT) {
+    if (++nodes % 500 == 0 && DateTime.now().millisecondsSinceEpoch - sT > maxT) return eval(b, botT, pS, oS, tC);
+    if (d == 0 || pS >= WIN_SCORE || oS >= WIN_SCORE) return eval(b, botT, pS, oS, tC);
+    var moves = genMoves(b, max ? botT : (botT == 'purple' ? 'orange' : 'purple'), tC);
+    if (moves.isEmpty) return eval(b, botT, pS, oS, tC);
 
-  static int minimax(List<List<PieceData?>> board, int depth, int alpha, int beta, bool isMaximizing, int turnCount, int pScore, int oScore, String botTeam, int startTime, int maxTime) {
-    nodesVisited++;
-    if (nodesVisited % 500 == 0 && (DateTime.now().millisecondsSinceEpoch - startTime > maxTime)) {
-      return evaluateBoard(board, botTeam, pScore, oScore, turnCount);
-    }
-
-    String currentTeam = isMaximizing ? botTeam : (botTeam == 'purple' ? 'orange' : 'purple');
-
-    if (depth == 0 || pScore >= WIN_SCORE || oScore >= WIN_SCORE) {
-      return evaluateBoard(board, botTeam, pScore, oScore, turnCount);
-    }
-
-    var moves = generateMoves(board, currentTeam, turnCount);
-    if (moves.isEmpty) return evaluateBoard(board, botTeam, pScore, oScore, turnCount);
-
-    if (isMaximizing) {
-      int maxEval = -99999999;
+    if (max) {
+      int maxE = -99999999;
       for (var m in moves) {
-        var nextB = cloneBoard(board);
-        var res = applyMoveSim(nextB, m, turnCount, pScore, oScore);
-        int ev = minimax(nextB, depth - 1, alpha, beta, false, turnCount + 1, res['pScore'], res['oScore'], botTeam, startTime, maxTime);
-        maxEval = math.max(maxEval, ev);
-        alpha = math.max(alpha, ev);
-        if (beta <= alpha) break;
+        var res = applySim(cloneBoard(b), m, tC, pS, oS);
+        int e = minimax(cloneBoard(b)..setAll(0, b), d - 1, alpha, beta, false, tC + 1, res['p']!, res['o']!, botT, sT, maxT);
+        maxE = math.max(maxE, e); alpha = math.max(alpha, e); if (beta <= alpha) break;
       }
-      return maxEval;
+      return maxE;
     } else {
-      int minEval = 99999999;
+      int minE = 99999999;
       for (var m in moves) {
-        var nextB = cloneBoard(board);
-        var res = applyMoveSim(nextB, m, turnCount, pScore, oScore);
-        int ev = minimax(nextB, depth - 1, alpha, beta, true, turnCount + 1, res['pScore'], res['oScore'], botTeam, startTime, maxTime);
-        minEval = math.min(minEval, ev);
-        beta = math.min(beta, ev);
-        if (beta <= alpha) break;
+        var res = applySim(cloneBoard(b), m, tC, pS, oS);
+        int e = minimax(cloneBoard(b)..setAll(0, b), d - 1, alpha, beta, true, tC + 1, res['p']!, res['o']!, botT, sT, maxT);
+        minE = math.min(minE, e); beta = math.min(beta, e); if (beta <= alpha) break;
       }
-      return minEval;
+      return minE;
     }
   }
-}
-
-// ==========================================
-// 5. CUSTOM VISUAL ENGINE (CUSTOMPAINTER)
-// ==========================================
-
-class PiecePainter extends CustomPainter {
-  final PieceData piece;
-  final bool isSelected;
-  final bool isImmobilized;
-  final double scale;
-
-  PiecePainter({required this.piece, this.isSelected = false, this.isImmobilized = false, this.scale = 1.0});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (isImmobilized) {
-      canvas.saveLayer(Offset.zero & size, Paint()..colorFilter = const ColorFilter.matrix([
-        0.2126, 0.7152, 0.0722, 0, 0,
-        0.2126, 0.7152, 0.0722, 0, 0,
-        0.2126, 0.7152, 0.0722, 0, 0,
-        0,      0,      0,      1, 0,
-      ]));
-    }
-
-    final double cx = size.width / 2;
-    final double cy = size.height / 2;
-    final PieceConfig config = CONFIG_BY_ID[piece.id]!;
-    final TeamTheme theme = piece.team == 'purple' ? purpleTheme : orangeTheme;
-
-    canvas.translate(cx, cy);
-    int baseRot = piece.team == 'orange' ? 180 : 0;
-    canvas.rotate((baseRot + piece.rotation) * math.pi / 180);
-    canvas.scale(scale);
-    canvas.translate(-cx, -cy);
-
-    Paint connectorPaint = Paint()
-      ..shader = ui.Gradient.linear(
-        Offset(cx, cy - size.height * 0.42), Offset(cx, cy),[metalShadowColor, const Color(0xFF2A2E37)]
-      )
-      ..style = PaintingStyle.fill;
-
-    // Draw Connectors
-    for (String dir in config.directions) {
-      canvas.save();
-      canvas.translate(cx, cy);
-      double angle = _getAngle(dir);
-      canvas.rotate(angle);
-      canvas.drawRRect(RRect.fromRectAndRadius(
-          Rect.fromCenter(center: Offset(0, -size.height * 0.21), width: size.width * 0.06, height: size.height * 0.42),
-          const Radius.circular(2)), connectorPaint);
-      canvas.restore();
-    }
-
-    // Draw Nodes
-    for (String dir in config.directions) {
-      canvas.save();
-      canvas.translate(cx, cy);
-      double angle = _getAngle(dir);
-      canvas.rotate(angle);
-      
-      bool isJump = config.jumpDirections.contains(dir);
-      bool isPower = piece.id == 'DP' && dir == 'n';
-      
-      Paint nodeBg = Paint();
-      Paint nodeBorder = Paint()..style = PaintingStyle.stroke..strokeWidth = 1.0;
-      
-      if (isSelected && !isJump && !isPower) {
-        nodeBg.shader = ui.Gradient.radial(Offset(0, -size.height * 0.44), size.width * 0.08,[theme.glow, theme.color]);
-        nodeBorder.color = theme.glow;
-        _drawGlow(canvas, Offset(0, -size.height * 0.44), size.width * 0.08, theme.color, 10);
-      } else if (isSelected && isJump) {
-        nodeBg.shader = ui.Gradient.radial(Offset(0, -size.height * 0.44), size.width * 0.08, [metalShadowColor, Colors.black]);
-        nodeBorder.color = theme.glow;
-        _drawGlow(canvas, Offset(0, -size.height * 0.44), size.width * 0.08, theme.color, 10);
-      } else if (isSelected && isPower) {
-        nodeBg.shader = ui.Gradient.radial(Offset(0, -size.height * 0.44), size.width * 0.08,[Colors.white, theme.glow, theme.color], [0, 0.55, 1]);
-        nodeBorder.color = Colors.white;
-        _drawGlow(canvas, Offset(0, -size.height * 0.44), size.width * 0.08, theme.color, 10);
-      } else {
-        nodeBg.shader = ui.Gradient.radial(Offset(0, -size.height * 0.44), size.width * 0.08, [metalHighlightColor, metalBaseColor]);
-        nodeBorder.color = metalShadowColor;
-      }
-
-      canvas.drawCircle(Offset(0, -size.height * 0.44), size.width * 0.085, nodeBg);
-      canvas.drawCircle(Offset(0, -size.height * 0.44), size.width * 0.085, nodeBorder);
-      canvas.restore();
-    }
-
-    // Draw Centerpiece
-    double cSize = piece.type == 'D' ? 0.25 : (piece.type == 'C' ? 0.40 : 0.20);
-    Rect cRect = Rect.fromCenter(center: Offset(cx, cy), width: size.width * cSize, height: size.height * cSize);
-    
-    Paint centerBg = Paint()..shader = ui.Gradient.linear(cRect.topLeft, cRect.bottomRight,[metalHighlightColor, metalBaseColor]);
-    Paint centerBorder = Paint()..style = PaintingStyle.stroke..strokeWidth = 1.0..color = metalShadowColor;
-
-    canvas.save();
-    if (piece.type == 'D') {
-      canvas.translate(cx, cy);
-      canvas.rotate(45 * math.pi / 180);
-      canvas.translate(-cx, -cy);
-      canvas.drawRect(cRect, centerBg);
-      canvas.drawRect(cRect, centerBorder);
-    } else {
-      canvas.drawCircle(Offset(cx, cy), size.width * cSize / 2, centerBg);
-      canvas.drawCircle(Offset(cx, cy), size.width * cSize / 2, centerBorder);
-    }
-    canvas.restore();
-
-    // Draw Gem
-    double gSize = cSize * 0.6;
-    Rect gRect = Rect.fromCenter(center: Offset(cx, cy), width: size.width * gSize, height: size.height * gSize);
-    Paint gemBg = Paint()..shader = ui.Gradient.radial(Offset(cx - gRect.width*0.2, cy - gRect.height*0.2), gRect.width,[theme.glow, theme.color]);
-
-    if (isSelected) {
-      _drawGlow(canvas, Offset(cx, cy), gRect.width / 2, theme.color, 12);
-    }
-
-    canvas.save();
-    if (piece.type == 'D') {
-      canvas.translate(cx, cy);
-      canvas.rotate(45 * math.pi / 180);
-      canvas.translate(-cx, -cy);
-      canvas.drawRRect(RRect.fromRectAndRadius(gRect, const Radius.circular(2)), gemBg);
-    } else {
-      canvas.drawCircle(Offset(cx, cy), size.width * gSize / 2, gemBg);
-    }
-    canvas.restore();
-
-    if (isImmobilized) canvas.restore();
-  }
-
-  double _getAngle(String dir) {
-    const map = {'n': 0.0, 'ne': 45.0, 'e': 90.0, 'se': 135.0, 's': 180.0, 'sw': 225.0, 'w': 270.0, 'nw': 315.0};
-    return map[dir]! * math.pi / 180;
-  }
-
-  void _drawGlow(Canvas canvas, Offset center, double radius, Color color, double blurRadius) {
-    Paint glow = Paint()
-      ..color = color
-      ..maskFilter = MaskFilter.blur(BlurStyle.outer, blurRadius);
-    canvas.drawCircle(center, radius, glow);
-  }
-
-  @override
-  bool shouldRepaint(PiecePainter oldDelegate) => 
-      oldDelegate.piece != piece || oldDelegate.isSelected != isSelected || oldDelegate.isImmobilized != isImmobilized || oldDelegate.scale != scale;
-}
-
-
-
-// END OF PART 1 - Type "continue" for Part 2
-
-// ==========================================
-// 6. MAIN FLUTTER APP & STATE CONTROLLER
-// ==========================================
-
-void main() {
-  runApp(const GyroadApp());
 }
 
 class GyroadApp extends StatelessWidget {
   const GyroadApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'GYROAD',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        scaffoldBackgroundColor: bgColor,
-        fontFamily: 'Georgia', // Matching CSS serif
-        textTheme: const TextTheme(
-          bodyMedium: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontStyle: FontStyle.italic),
-        ),
-      ),
-      home: const GyroadGame(),
-    );
-  }
+  @override Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false, theme: ThemeData(scaffoldBackgroundColor: bgColor, fontFamily: 'Georgia'),
+    home: const GyroadGame(),
+  );
 }
 
-class GyroadGame extends StatefulWidget {
-  const GyroadGame({super.key});
+class GyroadGame extends StatefulWidget { const GyroadGame({super.key}); @override State<GyroadGame> createState() => _GameState(); }
 
-  @override
-  State<GyroadGame> createState() => _GyroadGameState();
-}
+class _GameState extends State<GyroadGame> with TickerProviderStateMixin {
+  List<List<PieceData?>> board =[]; int pScore = 0, oScore = 0, tCount = 1; String turn = 'purple', mode = 'bot', botT = 'orange';
+  bool gameOver = false, isAnim = false, isLock = false, isRot = false; String? winMsg;
+  Coordinate? selCell, wobCell; Set<Coordinate> avail = {}, swapAvail = {};
+  int rotTurn = 0, origRot = 0, visRot = 0; int? rotId;
+  List<GameSnapshot> hist = []; List<String> notation = [], expMoves =[]; int expIdx = 0, pUid = 0;
+  bool showSet = false, showExp = false; int dP = 3, tP = 1000, dO = 3, tO = 1000;
+  final TextEditingController _expCtrl = TextEditingController();
 
-class _GyroadGameState extends State<GyroadGame> with TickerProviderStateMixin {
-  // Game State
-  late List<List<PieceData?>> boardState;
-  int purpleScore = 0;
-  int orangeScore = 0;
-  int turnCount = 1;
-  String currentTurn = 'purple';
-  bool gameOver = false;
-  String? winnerMessage;
+  late AnimationController _breatheCtrl, _moveCtrl, _wobbleCtrl;
+  PieceData? _movingA, _movingB; Animation<Offset>? _animA, _animB; Coordinate? _destA;
 
-  // Interaction State
-  Coordinate? selectedCell;
-  Set<Coordinate> availableCells = {};
-  Set<Coordinate> swapAvailableCells = {};
-  bool isAnimating = false;
-  bool isInteractionLocked = false;
-  
-  // Rotation State
-  bool isRotating = false;
-  int rotationsThisTurn = 0;
-  int? rotatedPieceId;
-  int originalRotation = 0;
-  int visualRotation = 0;
-
-  // History & Modes
-  List<GameSnapshot> moveHistory = [];
-  List<String> fullNotation =[];
-  String gameMode = 'bot'; // '2-player', 'bot', 'bot-vs-bot', 'explorer'
-  String botTeam = 'orange';
-  
-  // AI Settings
-  int depthPurple = 3;
-  int timePurple = 1000;
-  int depthOrange = 3;
-  int timeOrange = 1000;
-
-  // Explorer State
-  List<String> explorerMoves =[];
-  int explorerIndex = 0;
-  bool showExplorerModal = false;
-  bool showSettingsModal = false;
-  final TextEditingController _explorerController = TextEditingController();
-
-  int pieceUidCounter = 0;
-
-  @override
-  void initState() {
+  @override void initState() {
     super.initState();
+    _breatheCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1500))..repeat(reverse: true);
+    _moveCtrl = AnimationController(vsync: this);
+    _wobbleCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
+    _wobbleCtrl.addListener(() => setState((){}));
     _initBoard();
   }
+  @override void dispose() { _breatheCtrl.dispose(); _moveCtrl.dispose(); _wobbleCtrl.dispose(); super.dispose(); }
 
   void _initBoard() {
-    boardState = List.generate(ROWS, (_) => List.generate(COLS, (_) => null));
-    pieceUidCounter = 0;
-
-    for (var pos in PURPLE_SETUP) {
-      boardState[pos.row][pos.col] = PieceData(
-        id: pos.id, type: CONFIG_BY_ID[pos.id]!.type, team: 'purple', uid: pieceUidCounter++
-      );
-    }
-    for (var pos in ORANGE_SETUP) {
-      boardState[pos.row][pos.col] = PieceData(
-        id: pos.id, type: CONFIG_BY_ID[pos.id]!.type, team: 'orange', uid: pieceUidCounter++, rotation: 0 // Base rotation handled visually
-      );
-    }
-
-    if (gameMode == 'bot' && currentTurn == botTeam) {
-      _executeBotTurn();
-    } else if (gameMode == 'bot-vs-bot') {
-      _executeBotTurn();
-    }
+    board = List.generate(ROWS, (_) => List.filled(COLS, null)); pUid = 0;
+    const pSet =[Coordinate(6,0),Coordinate(6,1),Coordinate(6,2),Coordinate(6,3),Coordinate(6,4),Coordinate(6,5),Coordinate(6,6),Coordinate(7,0),Coordinate(7,1),Coordinate(7,2),Coordinate(7,3),Coordinate(7,4),Coordinate(7,5),Coordinate(7,6)];
+    const pIds =['PR','PL','PR','PX','PL','PR','PL','DP','DT','DN','C','DN','DT','DP'];
+    for (int i=0; i<pSet.length; i++) board[pSet[i].r][pSet[i].c] = PieceData(id: pIds[i], type: CONFIG_BY_ID[pIds[i]]!.type, team: 'purple', uid: pUid++);
+    const oSet =[Coordinate(1,0),Coordinate(1,1),Coordinate(1,2),Coordinate(1,3),Coordinate(1,4),Coordinate(1,5),Coordinate(1,6),Coordinate(0,0),Coordinate(0,1),Coordinate(0,2),Coordinate(0,3),Coordinate(0,4),Coordinate(0,5),Coordinate(0,6)];
+    const oIds =['PL','PR','PL','PX','PR','PL','PR','DP','DT','DN','C','DN','DT','DP'];
+    for (int i=0; i<oSet.length; i++) board[oSet[i].r][oSet[i].c] = PieceData(id: oIds[i], type: CONFIG_BY_ID[oIds[i]]!.type, team: 'orange', uid: pUid++);
+    if ((mode == 'bot' && turn == botT) || mode == 'bot-vs-bot') _execBot();
   }
 
-  void resetGame() {
-    setState(() {
-      selectedCell = null;
-      isAnimating = false;
-      isInteractionLocked = false;
-      isRotating = false;
-      currentTurn = 'purple';
-      turnCount = 1;
-      purpleScore = 0;
-      orangeScore = 0;
-      gameOver = false;
-      winnerMessage = null;
-      rotationsThisTurn = 0;
-      rotatedPieceId = null;
-      moveHistory.clear();
-      availableCells.clear();
-      swapAvailableCells.clear();
-
-      if (gameMode != 'explorer' || explorerIndex == 0) {
-        fullNotation.clear();
-      }
-
-      _initBoard();
-    });
+  void _reset() => setState(() { selCell = wobCell = null; isAnim = isLock = isRot = gameOver = false; turn = 'purple'; tCount = 1; pScore = oScore = rotTurn = 0; rotId = null; hist.clear(); avail.clear(); swapAvail.clear(); if (mode != 'explorer' || expIdx == 0) notation.clear(); _initBoard(); });
+  void _save() { hist.add(GameSnapshot(AIEngine.cloneBoard(board), pScore, oScore, tCount, turn, List.from(notation))); if (hist.length > 100) hist.removeAt(0); }
+  void _undo() {
+    if (isAnim || gameOver || hist.isEmpty) return;
+    GameSnapshot? t; if (mode == 'explorer' || mode == '2-player') t = hist.removeLast(); else if (hist.length >= 2) { hist.removeLast(); t = hist.removeLast(); } else if (hist.length == 1) t = hist.removeLast();
+    if (t != null) setState(() { board = AIEngine.cloneBoard(t!.board); pScore = t.pScore; oScore = t.oScore; tCount = t.turnCount; turn = t.currentTurn; notation = List.from(t.notation); rotTurn = 0; rotId = null; _clear(); });
   }
 
-  void _saveState() {
-    moveHistory.add(GameSnapshot(
-      board: AIEngine.cloneBoard(boardState),
-      purpleScore: purpleScore, orangeScore: orangeScore,
-      turnCount: turnCount, currentTurn: currentTurn,
-      fullNotation: List.from(fullNotation),
-    ));
-    if (moveHistory.length > 100) moveHistory.removeAt(0);
-  }
+  void _clear() { avail.clear(); swapAvail.clear(); isRot = false; selCell = null; }
+  void _wobble(Coordinate c) { wobCell = c; _wobbleCtrl.forward(from: 0).then((_) => setState(() => wobCell = null)); }
 
-  void handleUndo() {
-    if (isAnimating || gameOver || moveHistory.isEmpty) return;
-    
-    GameSnapshot? targetSnapshot;
-    if (gameMode == 'explorer') {
-      targetSnapshot = moveHistory.removeLast();
-    } else if (gameMode == 'bot') {
-      if (moveHistory.length >= 2) {
-        moveHistory.removeLast();
-        targetSnapshot = moveHistory.removeLast();
-      } else if (moveHistory.length == 1) {
-        targetSnapshot = moveHistory.removeLast();
-      }
-    } else {
-      targetSnapshot = moveHistory.removeLast();
-    }
-
-    if (targetSnapshot != null) {
-      setState(() {
-        boardState = AIEngine.cloneBoard(targetSnapshot!.board);
-        purpleScore = targetSnapshot.purpleScore;
-        orangeScore = targetSnapshot.orangeScore;
-        turnCount = targetSnapshot.turnCount;
-        currentTurn = targetSnapshot.currentTurn;
-        fullNotation = List.from(targetSnapshot.fullNotation);
-        rotationsThisTurn = 0;
-        rotatedPieceId = null;
-        _clearHighlights();
-      });
-    }
-  }
-
-  void _clearHighlights() {
-    availableCells.clear();
-    swapAvailableCells.clear();
-    isRotating = false;
-    selectedCell = null;
-  }
-
-  String _rcToCoord(int r, int c) => String.fromCharCode(97 + c) + (8 - r).toString();
-  Coordinate _coordToRC(String coord) => Coordinate(8 - int.parse(coord[1]), coord.codeUnitAt(0) - 97);
-
-  Future<void> _executeMove(Coordinate from, Coordinate to, bool isSwap, int? preMoveRotation) async {
-    if (isAnimating) return;
-    _saveState();
-
-    PieceData movingPiece = boardState[from.r][from.c]!;
-    PieceData? targetPiece = isSwap ? boardState[to.r][to.c] : null;
-
-    if (gameMode != 'explorer') {
-      String pieceID = movingPiece.id;
-      String startCoord = _rcToCoord(from.r, from.c);
-      String endCoord = _rcToCoord(to.r, to.c);
-      String action = isSwap ? 'x' : '-';
-      String rotStr = (preMoveRotation != null && preMoveRotation != movingPiece.rotation) ? 'R$preMoveRotation' : '';
-      fullNotation.add('$pieceID$startCoord$rotStr$action$endCoord');
-    }
+  Future<void> _execMove(Coordinate f, Coordinate t, bool isSwap, int? rot, double cW, double gap) async {
+    if (isAnim) return; _save();
+    PieceData pA = board[f.r][f.c]!; PieceData? pB = isSwap ? board[t.r][t.c] : null;
+    if (mode != 'explorer') notation.add('${pA.id}${String.fromCharCode(97+f.c)}${8-f.r}${rot != null && rot != pA.rotation ? 'R$rot' : ''}${isSwap ? 'x' : '-'}${String.fromCharCode(97+t.c)}${8-t.r}');
 
     setState(() {
-      isAnimating = true;
-      isInteractionLocked = true;
-      if (preMoveRotation != null) movingPiece.rotation = preMoveRotation;
-      _clearHighlights();
-      
-      // Let AnimatedPositioned handle the smooth transition
-      boardState[from.r][from.c] = null;
-      boardState[to.r][to.c] = movingPiece;
-      
-      if (isSwap && targetPiece != null) {
-        boardState[from.r][from.c] = targetPiece;
-      }
+      isAnim = isLock = true; if (rot != null) pA.rotation = rot; _clear();
+      board[f.r][f.c] = null; if (isSwap) board[t.r][t.c] = null;
+      _movingA = pA; _movingB = pB; _destA = t;
     });
 
-    // Wait for the step duration mapping (simulating CSS transitions)
-    await Future.delayed(const Duration(milliseconds: STEP_DURATION_MS));
+    List<Coordinate> path = GameLogic.findPath(board, f.r, f.c, t.r, t.c, rot);
+    if (path.length == 1) path.add(t); // Failsafe
+    List<TweenSequenceItem<Offset>> seq =[];
+    Offset getP(Coordinate c) => Offset(gap + c.c * (cW + gap), gap + c.r * (cW + gap));
+    for (int i = 0; i < path.length - 1; i++) seq.add(TweenSequenceItem(tween: Tween(begin: getP(path[i]), end: getP(path[i+1])), weight: 1.0));
+    _animA = TweenSequence(seq).animate(CurvedAnimation(parent: _moveCtrl, curve: Curves.easeInOut));
+    if (isSwap) _animB = Tween(begin: getP(t), end: getP(f)).animate(CurvedAnimation(parent: _moveCtrl, curve: Curves.easeInOut));
 
-    int scoreToAdd = 0;
-    bool removeMoving = false;
-    bool removeTarget = false;
+    _moveCtrl.duration = Duration(milliseconds: STEP_DURATION_MS * (path.length - 1));
+    await _moveCtrl.forward(from: 0);
 
-    if (isSwap && movingPiece.type == 'C' && targetPiece?.type == 'C') {
-      removeTarget = true;
-      scoreToAdd += 2;
-    }
-
-    int promoRow = movingPiece.team == 'purple' ? 0 : ROWS - 1;
-    if (movingPiece.type == 'P' && to.r == promoRow) {
-      removeMoving = true;
-      if (movingPiece.id != 'PX') scoreToAdd = scoreToAdd > 0 ? scoreToAdd : 1;
-    }
+    int sAdd = 0; bool rmA = false, rmB = false;
+    if (isSwap && pA.type == 'C' && pB?.type == 'C') { rmB = true; sAdd += 2; }
+    if (pA.type == 'P' && t.r == (pA.team == 'purple' ? 0 : ROWS - 1)) { rmA = true; if (pA.id != 'PX' && sAdd == 0) sAdd = 1; }
 
     setState(() {
-      if (removeMoving) boardState[to.r][to.c] = null;
-      if (isSwap && removeTarget) boardState[from.r][from.c] = null;
-      
-      if (isSwap && !removeTarget && targetPiece != null && movingPiece.team != targetPiece.team) {
-        targetPiece.immobilizedTurn = turnCount + 2;
-      }
-
-      if (currentTurn == 'purple') purpleScore += scoreToAdd;
-      else orangeScore += scoreToAdd;
-
-      _checkWinCondition();
-      isAnimating = false;
-      if (!gameOver) isInteractionLocked = false;
+      _movingA = _movingB = _animA = _animB = _destA = null;
+      if (!rmA) board[t.r][t.c] = pA;
+      if (isSwap && !rmB) { board[f.r][f.c] = pB; if (pA.team != pB!.team) pB.immobilizedTurn = tCount + 2; }
+      if (turn == 'purple') pScore += sAdd; else oScore += sAdd;
+      if (pScore >= WIN_SCORE || oScore >= WIN_SCORE) { gameOver = true; isLock = true; winMsg = '${pScore >= WIN_SCORE ? 'Purple' : 'Orange'} Wins!'; if(mode == 'bot-vs-bot') Future.delayed(const Duration(seconds: 4), _reset); }
+      isAnim = false; if (!gameOver) isLock = false;
     });
-
-    if (!gameOver) await _switchTurn();
-  }
-
-  void _checkWinCondition() {
-    if (purpleScore >= WIN_SCORE) _endGame('Purple');
-    if (orangeScore >= WIN_SCORE) _endGame('Orange');
-  }
-
-  void _endGame(String winner) {
-    setState(() {
-      gameOver = true;
-      isInteractionLocked = true;
-      winnerMessage = '$winner Wins!';
-    });
-    if (gameMode == 'bot-vs-bot') {
-      Future.delayed(const Duration(seconds: 4), resetGame);
-    }
+    if (!gameOver) _switchTurn();
   }
 
   Future<void> _switchTurn() async {
-    if (gameOver) return;
     setState(() {
-      turnCount++;
-      currentTurn = currentTurn == 'purple' ? 'orange' : 'purple';
-      rotationsThisTurn = 0;
-      rotatedPieceId = null;
-
-      // Un-immobilize pieces
-      for (int r = 0; r < ROWS; r++) {
-        for (int c = 0; c < COLS; c++) {
-          PieceData? p = boardState[r][c];
-          if (p != null && p.team == currentTurn && p.immobilizedTurn > 0 && turnCount >= p.immobilizedTurn) {
-            p.immobilizedTurn = 0;
-          }
-        }
-      }
+      tCount++; turn = turn == 'purple' ? 'orange' : 'purple'; rotTurn = 0; rotId = null;
+      for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) if (board[r][c] != null && board[r][c]!.team == turn && tCount >= board[r][c]!.immobilizedTurn) board[r][c]!.immobilizedTurn = 0;
     });
-
-    if (!_hasAnyValidMoves(currentTurn)) {
-      _endGame(currentTurn == 'purple' ? 'Orange' : 'Purple');
-      return;
-    }
-
-    if (gameMode == 'bot' && currentTurn == botTeam) {
-      await _executeBotTurn();
-    } else if (gameMode == 'bot-vs-bot') {
-      await _executeBotTurn();
-    }
+    bool hasMoves = false;
+    for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) if (board[r][c] != null && board[r][c]!.team == turn && board[r][c]!.immobilizedTurn <= tCount && GameLogic.getHighlightLayers(board, r, c).isNotEmpty) hasMoves = true;
+    if (!hasMoves) { setState(() { gameOver = isLock = true; winMsg = '${turn == 'purple' ? 'Orange' : 'Purple'} Wins!'; }); return; }
+    if ((mode == 'bot' && turn == botT) || mode == 'bot-vs-bot') await _execBot();
   }
 
-  bool _hasAnyValidMoves(String team) {
-    for (int r = 0; r < ROWS; r++) {
-      for (int c = 0; c < COLS; c++) {
-        PieceData? p = boardState[r][c];
-        if (p != null && p.team == team && (p.immobilizedTurn == 0 || turnCount >= p.immobilizedTurn)) {
-          var layers = GameLogic.getAccessibleHighlightLayers(boardState, r, c);
-          if (layers.isNotEmpty) return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  Future<void> _executeBotTurn() async {
-    setState(() { isInteractionLocked = true; });
-    await Future.delayed(const Duration(milliseconds: 500));
-    
-    if (gameOver) return;
-
-    int depth = currentTurn == 'purple' ? depthPurple : depthOrange;
-    int maxTime = currentTurn == 'purple' ? timePurple : timeOrange;
-    int startTime = DateTime.now().millisecondsSinceEpoch;
-    AIEngine.nodesVisited = 0;
-
-    var moves = AIEngine.generateMoves(boardState, currentTurn, turnCount);
-    if (moves.isEmpty) {
-      await _switchTurn();
-      return;
-    }
-
-    MoveAction bestMove = moves[0];
-    int bestValue = -99999999;
-    int alpha = -99999999;
-    int beta = 99999999;
-
+  Future<void> _execBot() async {
+    setState(() => isLock = true); await Future.delayed(const Duration(milliseconds: 500)); if (gameOver) return;
+    int sT = DateTime.now().millisecondsSinceEpoch, maxT = turn == 'purple' ? tP : tO; AIEngine.nodes = 0;
+    var moves = AIEngine.genMoves(board, turn, tCount); if (moves.isEmpty) return _switchTurn();
+    MoveAction bestM = moves[0]; int bestV = -99999999, alpha = -99999999, beta = 99999999;
     for (var m in moves) {
-      if (DateTime.now().millisecondsSinceEpoch - startTime > maxTime) break;
-      var nextB = AIEngine.cloneBoard(boardState);
-      var res = AIEngine.applyMoveSim(nextB, m, turnCount, purpleScore, orangeScore);
-      int moveVal = AIEngine.minimax(nextB, depth - 1, alpha, beta, false, turnCount + 1, res['pScore'], res['oScore'], currentTurn, startTime, maxTime);
-      
-      if (moveVal > bestValue) {
-        bestValue = moveVal;
-        bestMove = m;
-      }
-      alpha = math.max(alpha, bestValue);
+      if (DateTime.now().millisecondsSinceEpoch - sT > maxT) break;
+      var res = AIEngine.applySim(AIEngine.cloneBoard(board), m, tCount, pScore, oScore);
+      int val = AIEngine.minimax(AIEngine.cloneBoard(board), (turn == 'purple' ? dP : dO) - 1, alpha, beta, false, tCount + 1, res['p']!, res['o']!, turn, sT, maxT);
+      if (val > bestV) { bestV = val; bestM = m; } alpha = math.max(alpha, bestV);
     }
-
-    await _executeMove(bestMove.from, bestMove.to, bestMove.isSwap, bestMove.preMoveRotation);
+    await _execMove(bestM.from, bestM.to, bestM.isSwap, bestM.preMoveRotation, _cW, _gap);
   }
 
-  void handleCellClick(int r, int c) {
-    if (isInteractionLocked || gameOver || (gameMode == 'bot' && currentTurn == botTeam) || gameMode == 'bot-vs-bot' || gameMode == 'explorer') return;
-
+  double _cW = 0, _gap = 0;
+  void _click(int r, int c) {
+    if (isLock || gameOver || (mode == 'bot' && turn == botT) || mode == 'bot-vs-bot' || mode == 'explorer') return;
     Coordinate clicked = Coordinate(r, c);
-
-    if (isRotating) {
-      if (selectedCell == clicked) {
-        setState(() => visualRotation = (visualRotation + 90) % 360);
+    if (isRot) { if (selCell == clicked) setState(() => visRot = (visRot + 90) % 360); return; }
+    if (selCell != null && (avail.contains(clicked) || swapAvail.contains(clicked))) { _execMove(selCell!, clicked, swapAvail.contains(clicked), null, _cW, _gap); return; }
+    PieceData? p = board[r][c];
+    if (p != null && p.team == turn && p.immobilizedTurn <= tCount) {
+      if (selCell == clicked) setState(() => _clear());
+      else {
+        setState(() { _clear(); selCell = clicked; if (p.type == 'D' && rotTurn < 2 && p.uid != rotId) isRot = true; visRot = origRot = p.rotation; });
+        _showLayers(r, c);
       }
-      return;
-    }
-
-    if (selectedCell != null && (availableCells.contains(clicked) || swapAvailableCells.contains(clicked))) {
-      bool isSwap = swapAvailableCells.contains(clicked);
-      _executeMove(selectedCell!, clicked, isSwap, null);
-      return;
-    }
-
-    PieceData? clickedPiece = boardState[r][c];
-    if (clickedPiece != null) {
-      if (clickedPiece.team != currentTurn || (clickedPiece.immobilizedTurn > 0 && turnCount < clickedPiece.immobilizedTurn)) return;
-
-      if (selectedCell == clicked) {
-        setState(() => _clearHighlights());
-      } else {
-        setState(() {
-          _clearHighlights();
-          selectedCell = clicked;
-          if (clickedPiece.type == 'D' && rotationsThisTurn < 2 && clickedPiece.uid != rotatedPieceId) {
-            // Show rotate UI handles via Stack
-          }
-          _revealHighlights(r, c);
-        });
-      }
-    } else {
-      setState(() => _clearHighlights());
-    }
+    } else { setState(() => _clear()); _wobble(clicked); }
   }
 
-  void _revealHighlights(int r, int c) async {
-    var layers = GameLogic.getAccessibleHighlightLayers(boardState, r, c);
-    for (var layer in layers) {
-      await Future.delayed(const Duration(milliseconds: LAYER_DELAY_MS));
-      if (!mounted || selectedCell?.r != r || selectedCell?.c != c) break;
-      setState(() {
-        availableCells.addAll(layer[0]);
-        swapAvailableCells.addAll(layer[1]);
-      });
-    }
+  void _showLayers(int r, int c) async {
+    var layers = GameLogic.getHighlightLayers(board, r, c);
+    for (var l in layers) { await Future.delayed(const Duration(milliseconds: LAYER_DELAY_MS)); if (!mounted || selCell?.r != r || selCell?.c != c) break; setState(() { avail.addAll(l[0]); swapAvail.addAll(l[1]); }); }
   }
 
-  void _enterRotationMode() {
-    if (selectedCell == null) return;
-    PieceData p = boardState[selectedCell!.r][selectedCell!.c]!;
-    if (rotationsThisTurn >= 2 || p.uid == rotatedPieceId) return;
-
+  void _rotOut(bool ok) {
+    if (!isRot || selCell == null) return;
     setState(() {
-      isRotating = true;
-      originalRotation = p.rotation;
-      visualRotation = p.rotation;
-      availableCells.clear();
-      swapAvailableCells.clear();
+      if (ok && visRot != origRot) { rotTurn++; rotId = board[selCell!.r][selCell!.c]!.uid; board[selCell!.r][selCell!.c]!.rotation = visRot; }
+      isRot = false; _showLayers(selCell!.r, selCell!.c);
     });
   }
 
-  void _exitRotationMode(bool confirm) {
-    if (!isRotating || selectedCell == null) return;
-    PieceData p = boardState[selectedCell!.r][selectedCell!.c]!;
-
-    setState(() {
-      if (confirm && visualRotation != originalRotation) {
-        rotationsThisTurn++;
-        rotatedPieceId = p.uid;
-        p.rotation = visualRotation;
-      }
-      isRotating = false;
-      _revealHighlights(selectedCell!.r, selectedCell!.c);
-    });
-  }
-
-  void _loadExplorerGame() {
-    String input = _explorerController.text;
-    RegExp regex = RegExp(r'([A-Z]{1,2})([a-g][1-8])(?:R(\d+))?([x\-])([a-g][1-8])');
-    var matches = regex.allMatches(input);
-    
-    if (matches.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No valid moves found.')));
-      return;
-    }
-
-    setState(() {
-      explorerMoves = matches.map((m) => m.group(0)!).toList();
-      gameMode = 'explorer';
-      explorerIndex = 0;
-      showExplorerModal = false;
-      resetGame();
-    });
-  }
-
-  Future<void> _nextExplorerMove() async {
-    if (isAnimating || explorerIndex >= explorerMoves.length) return;
-    
-    String moveStr = explorerMoves[explorerIndex];
-    RegExp regex = RegExp(r'^([A-Z]{1,2})([a-g][1-8])(?:R(\d+))?([x\-])([a-g][1-8])$');
-    var match = regex.firstMatch(moveStr);
-    if (match == null) return;
-
-    Coordinate from = _coordToRC(match.group(2)!);
-    Coordinate to = _coordToRC(match.group(5)!);
-    int? rot = match.group(3) != null ? int.parse(match.group(3)!) : null;
-    bool isSwap = match.group(4) == 'x';
-
-    setState(() { fullNotation.add(moveStr); });
-    await _executeMove(from, to, isSwap, rot);
-    setState(() { explorerIndex++; });
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        children:[
-          // Background Gradient matching web bg
-          Container(color: bgColor),
-
-          SafeArea(
-            child: Column(
-              children:[
-                _buildScoreBars(),
-                Expanded(
-                  child: Center(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        double padding = 20;
-                        double maxWidth = constraints.maxWidth - padding * 2;
-                        double maxHeight = constraints.maxHeight - padding * 2;
-                        double cellSize = math.min(maxWidth / COLS, maxHeight / ROWS);
-                        double boardWidth = cellSize * COLS;
-                        double boardHeight = cellSize * ROWS;
-
-                        return SizedBox(
-                          width: boardWidth,
-                          height: boardHeight,
-                          child: Stack(
-                            clipBehavior: Clip.none,
-                            children:[
-                              // Board Grid Background
-                              Container(
-                                decoration: BoxDecoration(
-                                  color: boardBg,
-                                  border: Border.all(color: currentTurn == 'purple' ? purpleTheme.color : orangeTheme.color, width: 3),
-                                  boxShadow: const[BoxShadow(color: Colors.black54, blurRadius: 20)],
-                                ),
-                                child: GridView.builder(
-                                  physics: const NeverScrollableScrollPhysics(),
-                                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: COLS,
-                                    mainAxisSpacing: 0, crossAxisSpacing: 0,
-                                  ),
-                                  itemCount: ROWS * COLS,
-                                  itemBuilder: (context, index) {
-                                    int r = index ~/ COLS; int c = index % COLS;
-                                    Coordinate coord = Coordinate(r, c);
-                                    bool isSelected = selectedCell == coord;
-                                    bool isAvail = availableCells.contains(coord);
-                                    bool isSwap = swapAvailableCells.contains(coord);
-
-                                    return GestureDetector(
-                                      onTap: () => handleCellClick(r, c),
-                                      child: Container(
-                                        margin: const EdgeInsets.all(2), // Simulate CSS gap
-                                        decoration: BoxDecoration(
-                                          color: isSelected ? selectedColor : (isAvail ? availableColor : (isSwap ? swapColor : cellColor)),
-                                          boxShadow: isSelected || isAvail || isSwap ?[
-                                            BoxShadow(color: isSelected ? selectedColor : (isSwap ? swapColor : availableColor), blurRadius: 15)
-                                          ] : null,
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-
-                              // Animated Pieces
-                              ..._buildPieces(cellSize),
-
-                              // Win Message Overlay
-                              if (gameOver)
-                                Center(
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 30),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xF11A1A1A),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: borderColor, width: 2),
-                                    ),
-                                    child: Text(
-                                      winnerMessage!,
-                                      style: TextStyle(
-                                        fontSize: 40,
-                                        color: Colors.white,
-                                        shadows:[BoxShadow(color: winnerMessage!.contains('Purple') ? purpleTheme.color : orangeTheme.color, blurRadius: 15).scale(1)]
-                                      ),
-                                    ),
-                                  ),
-                                ),
-
-                              // Controls Overlay (Left side)
-                              if (selectedCell != null && !isInteractionLocked)
-                                Positioned(
-                                  left: -60,
-                                  top: (currentTurn == 'orange') ? 0 : null,
-                                  bottom: (currentTurn == 'purple') ? 0 : null,
-                                  child: _buildControls(),
-                                )
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                _buildNotationPanel(),
-              ],
-            ),
-          ),
-
-          // Floating Buttons
-          Positioned(
-            bottom: 15, left: MediaQuery.of(context).size.width / 2 - 25,
-            child: FloatingActionButton(
-              heroTag: 'settings', backgroundColor: const Color(0xFF6A5A87),
-              child: const Icon(Icons.settings),
-              onPressed: () => setState(() => showSettingsModal = true),
-            ),
-          ),
-          if (gameMode != 'bot-vs-bot' && gameMode != 'explorer' && moveHistory.isNotEmpty)
-            Positioned(
-              bottom: 15, right: 20,
-              child: FloatingActionButton(
-                heroTag: 'undo', backgroundColor: const Color(0xFF6A5A87),
-                child: const Icon(Icons.undo),
-                onPressed: handleUndo,
-              ),
-            ),
-
-          // Modals
-          if (showSettingsModal) _buildSettingsModal(),
-          if (showExplorerModal) _buildExplorerModal(),
-        ],
-      ),
+      body: Stack(children:[
+        SafeArea(child: Column(children:[
+          _scores(),
+          Expanded(child: LayoutBuilder(builder: (c, cons) {
+            _gap = cons.maxWidth * 0.015; _cW = (cons.maxWidth - (COLS + 1) * _gap) / COLS;
+            if (_cW * ROWS + _gap * (ROWS + 1) > cons.maxHeight - 60) _cW = (cons.maxHeight - 60 - _gap * (ROWS + 1)) / ROWS;
+            double bW = _cW * COLS + _gap * (COLS + 1), bH = _cW * ROWS + _gap * (ROWS + 1);
+            return Center(child: SizedBox(width: bW, height: bH, child: Stack(clipBehavior: Clip.none, children:[
+              Container(decoration: BoxDecoration(color: boardBg, border: Border.all(color: turn == 'purple' ? purpleTheme.color : orangeTheme.color, width: 3), boxShadow: const[BoxShadow(color: Colors.black54, blurRadius: 20)])),
+              ...List.generate(ROWS * COLS, (i) {
+                int r = i ~/ COLS, c = i % COLS; Coordinate coord = Coordinate(r, c);
+                bool s = selCell == coord, a = avail.contains(coord), sw = swapAvail.contains(coord), w = wobCell == coord;
+                double dx = 0; Color? sC;
+                if (w) {
+                  double t = _wobbleCtrl.value;
+                  if (t < 0.2) dx = -5.0 * (t / 0.2); else if (t < 0.4) dx = -5.0 + 10.0 * ((t - 0.2) / 0.2); else if (t < 0.6) dx = 5.0 - 8.0 * ((t - 0.4) / 0.2); else if (t < 0.8) dx = -3.0 + 6.0 * ((t - 0.6) / 0.2); else dx = 3.0 - 3.0 * ((t - 0.8) / 0.2);
+                  sC = Colors.redAccent.withOpacity(math.sin(t * math.pi));
+                }
+                return Positioned(left: _gap + c * (_cW + _gap), top: _gap + r * (_cW + _gap), width: _cW, height: _cW, child: GestureDetector(
+                  onTap: () => _click(r, c),
+                  child: Transform.translate(offset: Offset(dx, 0), child: AnimatedBuilder(animation: _breatheCtrl, builder: (ctx, _) {
+                    double bR = s || a || sw ? ui.lerpDouble(7, 25, _breatheCtrl.value)! : 0;
+                    return Container(decoration: BoxDecoration(color: s ? selectedColor : (a ? availableColor : (sw ? swapColor : cellColor)), boxShadow: s || a || sw || w ?[BoxShadow(color: w ? sC! : (s ? selectedColor : (sw ? swapColor : availableColor)), blurRadius: w ? 8 : bR)] : null));
+                  })),
+                ));
+              }),
+              ..._buildStaticPieces(),
+              if (_movingA != null && _animA != null) AnimatedBuilder(animation: _animA!, builder: (ctx, _) => Positioned(left: _animA!.value.dx, top: _animA!.value.dy, width: _cW, height: _cW, child: CustomPaint(painter: PiecePainter(_movingA!, false, false, 1.0)))),
+              if (_movingB != null && _animB != null) AnimatedBuilder(animation: _animB!, builder: (ctx, _) => Positioned(left: _animB!.value.dx, top: _animB!.value.dy, width: _cW, height: _cW, child: CustomPaint(painter: PiecePainter(_movingB!, false, false, 1.0)))),
+              if (isRot && selCell != null) Positioned(left: _gap + selCell!.c * (_cW + _gap) - _cW * 0.5, top: _gap + selCell!.r * (_cW + _gap) - _cW * 1.2, child: _rotMenu()),
+              if (gameOver) Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20), decoration: BoxDecoration(color: const Color(0xF11A1A1A), borderRadius: BorderRadius.circular(10), border: Border.all(color: borderColor, width: 2)), child: Text(winMsg!, style: TextStyle(fontSize: 32, color: Colors.white, shadows:[BoxShadow(color: winMsg!.contains('Purple') ? purpleTheme.color : orangeTheme.color, blurRadius: 15)])))),
+            ])));
+          })),
+          _notation(),
+        ])),
+        Positioned(bottom: 15, left: MediaQuery.of(context).size.width / 2 - 25, child: FloatingActionButton(heroTag: 'set', backgroundColor: const Color(0xFF6A5A87), onPressed: () => setState(() => showSet = true), child: const Icon(Icons.settings))),
+        if (mode != 'bot-vs-bot' && mode != 'explorer' && hist.isNotEmpty) Positioned(bottom: 15, right: 20, child: FloatingActionButton(heroTag: 'un', backgroundColor: const Color(0xFF6A5A87), onPressed: _undo, child: const Icon(Icons.undo))),
+        if (showSet) _settings(), if (showExp) _explorer(),
+      ]),
     );
   }
 
-  List<Widget> _buildPieces(double cellSize) {
-    List<Widget> pieces =[];
-    for (int r = 0; r < ROWS; r++) {
-      for (int c = 0; c < COLS; c++) {
-        PieceData? p = boardState[r][c];
-        if (p != null) {
-          bool isSelected = selectedCell?.r == r && selectedCell?.c == c;
-          int rotationToDraw = (isRotating && isSelected) ? visualRotation : p.rotation;
-          
-          pieces.add(
-            AnimatedPositioned(
-              key: ValueKey(p.uid),
-              duration: const Duration(milliseconds: STEP_DURATION_MS),
-              curve: Curves.easeInOut,
-              left: c * cellSize,
-              top: r * cellSize,
-              width: cellSize,
-              height: cellSize,
-              child: IgnorePointer( // Let grid capture clicks
-                child: Padding(
-                  padding: const EdgeInsets.all(2.0),
-                  child: CustomPaint(
-                    painter: PiecePainter(
-                      piece: p..rotation = rotationToDraw,
-                      isSelected: isSelected,
-                      isImmobilized: p.immobilizedTurn > turnCount,
-                      scale: isSelected ? 1.05 : 1.0,
-                    ),
-                  ),
-                ),
-              ),
-            )
-          );
-        }
+  List<Widget> _buildStaticPieces() {
+    List<Widget> w =[];
+    for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) {
+      if (board[r][c] != null) {
+        bool s = selCell?.r == r && selCell?.c == c;
+        w.add(Positioned(left: _gap + c * (_cW + _gap), top: _gap + r * (_cW + _gap), width: _cW, height: _cW, child: IgnorePointer(
+          child: AnimatedBuilder(animation: _breatheCtrl, builder: (ctx, _) => CustomPaint(painter: PiecePainter(board[r][c]!..rotation = (isRot && s) ? visRot : board[r][c]!.rotation, s, board[r][c]!.immobilizedTurn > tCount, s ? 1.05 : 1.0, s ? _breatheCtrl.value : 0.0))),
+        )));
       }
     }
-    return pieces;
+    return w;
   }
 
-  Widget _buildControls() {
-    PieceData p = boardState[selectedCell!.r][selectedCell!.c]!;
-    if (p.type != 'D' || rotationsThisTurn >= 2 || p.uid == rotatedPieceId) return const SizedBox();
+  Widget _scores() => Padding(padding: const EdgeInsets.all(15), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children:[
+    Row(children: List.generate(WIN_SCORE, (i) => Container(width: 25, height: 10, margin: const EdgeInsets.only(right: 4), decoration: BoxDecoration(border: Border.all(color: purpleTheme.color, width: 2), color: i < pScore ? purpleTheme.color : Colors.transparent, boxShadow: i < pScore ? [BoxShadow(color: purpleTheme.color, blurRadius: 5)] : null)))),
+    Row(children: List.generate(WIN_SCORE, (i) => Container(width: 25, height: 10, margin: const EdgeInsets.only(left: 4), decoration: BoxDecoration(border: Border.all(color: orangeTheme.color, width: 2), color: i < oScore ? orangeTheme.color : Colors.transparent, boxShadow: i < oScore ?[BoxShadow(color: orangeTheme.color, blurRadius: 5)] : null)))),
+  ]));
 
-    return Column(
-      children:[
-        if (!isRotating)
-          IconButton(
-            icon: const Icon(Icons.rotate_right, color: Colors.white, size: 30),
-            style: IconButton.styleFrom(backgroundColor: const Color(0xFF6A5A87), shape: const RoundedRectangleBorder()),
-            onPressed: _enterRotationMode,
-          ),
-        if (isRotating) ...[
-          IconButton(
-            icon: const Icon(Icons.check, color: Colors.white),
-            style: IconButton.styleFrom(backgroundColor: selectedColor, shape: const RoundedRectangleBorder()),
-            onPressed: () => _exitRotationMode(true),
-          ),
-          const SizedBox(height: 5),
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.white),
-            style: IconButton.styleFrom(backgroundColor: const Color(0xFF6A5A87), shape: const RoundedRectangleBorder()),
-            onPressed: () => _exitRotationMode(false),
-          ),
-        ]
-      ],
-    );
+  Widget _rotMenu() => Row(children:[
+    IconButton(icon: const Icon(Icons.check, color: Colors.white), style: IconButton.styleFrom(backgroundColor: selectedColor, shape: const CircleBorder()), onPressed: () => _rotOut(true)),
+    const SizedBox(width: 10),
+    IconButton(icon: const Icon(Icons.close, color: Colors.white), style: IconButton.styleFrom(backgroundColor: const Color(0xFF6A5A87), shape: const CircleBorder()), onPressed: () => _rotOut(false)),
+  ]);
+
+  Widget _notation() {
+    String txt = notation.isEmpty ? 'Game Start' : List.generate((notation.length / 2).ceil(), (i) => '${i + 1}. ${notation[i * 2]}${i * 2 + 1 < notation.length ? ' ${notation[i * 2 + 1]}' : ''}').join('   ');
+    return Container(margin: const EdgeInsets.fromLTRB(10, 0, 10, 80), padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.white10, border: Border.all(color: borderColor)), child: Row(children:[
+      Expanded(child: SingleChildScrollView(scrollDirection: Axis.horizontal, reverse: true, child: Text(txt, style: const TextStyle(fontFamily: 'monospace', color: Colors.white70)))),
+      const SizedBox(width: 10),
+      if (mode != 'explorer') ...[_btn('Copy', () => Clipboard.setData(ClipboardData(text: txt))), const SizedBox(width: 5), _btn('Explorer', () => setState(() => showExp = true))]
+      else ...[_btn('<', _undo), const SizedBox(width: 5), _btn('>', () async { if (isAnim || expIdx >= expMoves.length) return; var m = RegExp(r'^([A-Z]{1,2})([a-g][1-8])(?:R(\d+))?([x\-])([a-g][1-8])$').firstMatch(expMoves[expIdx]); if (m == null) return; Coordinate f = Coordinate(8 - int.parse(m.group(2)![1]), m.group(2)!.codeUnitAt(0) - 97), t = Coordinate(8 - int.parse(m.group(5)![1]), m.group(5)!.codeUnitAt(0) - 97); setState(() { notation.add(expMoves[expIdx]); }); await _execMove(f, t, m.group(4) == 'x', m.group(3) != null ? int.parse(m.group(3)!) : null, _cW, _gap); setState(() => expIdx++); }), const SizedBox(width: 5), _btn('Exit', () => setState(() { mode = 'bot'; _reset(); }))]
+    ]));
   }
 
-  Widget _buildScoreBars() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children:[
-          Row(children: List.generate(WIN_SCORE, (i) => Container(
-            width: 25, height: 10, margin: const EdgeInsets.only(right: 4),
-            decoration: BoxDecoration(
-              border: Border.all(color: purpleTheme.color, width: 2),
-              color: i < purpleScore ? purpleTheme.color : Colors.transparent,
-              boxShadow: i < purpleScore ?[BoxShadow(color: purpleTheme.color, blurRadius: 5)] : null,
-            ),
-          ))),
-          Row(children: List.generate(WIN_SCORE, (i) => Container(
-            width: 25, height: 10, margin: const EdgeInsets.only(left: 4),
-            decoration: BoxDecoration(
-              border: Border.all(color: orangeTheme.color, width: 2),
-              color: i < orangeScore ? orangeTheme.color : Colors.transparent,
-              boxShadow: i < orangeScore ?[BoxShadow(color: orangeTheme.color, blurRadius: 5)] : null,
-            ),
-          ))),
-        ],
-      ),
-    );
-  }
+  Widget _btn(String lbl, VoidCallback cb) => InkWell(onTap: cb, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5), decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF6A5A87), Color(0xFF3B314A)]), border: Border.all(color: borderColor), borderRadius: BorderRadius.circular(3)), child: Text(lbl, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, fontStyle: FontStyle.italic, color: Colors.white))));
 
-  Widget _buildNotationPanel() {
-    String text = 'Game Start';
-    if (fullNotation.isNotEmpty) {
-      List<String> pairs =[];
-      for (int i = 0; i < fullNotation.length; i += 2) {
-        String pair = '${(i ~/ 2) + 1}. ${fullNotation[i]}';
-        if (i + 1 < fullNotation.length) pair += ' ${fullNotation[i + 1]}';
-        pairs.add(pair);
-      }
-      text = pairs.join('   ');
+  Widget _settings() => Container(color: Colors.black87, child: Center(child: Container(width: 320, padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: const Color(0xFF1A1A1C), border: Border.all(color: borderColor)), child: Column(mainAxisSize: MainAxisSize.min, children:[
+    const Text('Game Mode', style: TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)), const SizedBox(height: 10),
+    ...['2-player', 'bot', 'bot-vs-bot'].map((m) => Padding(padding: const EdgeInsets.only(bottom: 5), child: SizedBox(width: double.infinity, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: mode == m ? selectedColor : const Color(0xFF3B314A), shape: const RoundedRectangleBorder()), onPressed: () => setState(() { mode = m; if (m == 'bot') botT = 'orange'; showSet = false; _reset(); }), child: Text(m, style: const TextStyle(color: Colors.white)))))),
+    const Divider(color: Colors.white24, height: 20),
+    _sld('P Depth: $dP', dP.toDouble(), 1, 5, (v) => setState(() => dP = v.toInt())), _sld('P Time: $tP', tP.toDouble(), 100, 3000, (v) => setState(() => tP = v.toInt())),
+    _sld('O Depth: $dO', dO.toDouble(), 1, 5, (v) => setState(() => dO = v.toInt())), _sld('O Time: $tO', tO.toDouble(), 100, 3000, (v) => setState(() => tO = v.toInt())),
+    const SizedBox(height: 10), ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[800]), onPressed: () => setState(() => showSet = false), child: const Text('Close', style: TextStyle(color: Colors.white)))
+  ]))));
+
+  Widget _sld(String l, double v, double min, double max, Function(double) cb) => Column(crossAxisAlignment: CrossAxisAlignment.start, children:[Text(l, style: const TextStyle(fontSize: 12, color: Colors.white)), Slider(value: v, min: min, max: max, activeColor: selectedColor, onChanged: cb)]);
+
+  Widget _explorer() => Container(color: Colors.black87, child: Center(child: Container(width: 320, padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: const Color(0xFF1A1A1C), border: Border.all(color: borderColor)), child: Column(mainAxisSize: MainAxisSize.min, children:[
+    const Text('Game Explorer', style: TextStyle(fontSize: 20, color: Colors.white)), const SizedBox(height: 10),
+    TextField(controller: _expCtrl, maxLines: 5, style: const TextStyle(fontFamily: 'monospace', color: Colors.white), decoration: const InputDecoration(hintText: 'Paste notation...', filled: true, fillColor: Colors.black54, border: OutlineInputBorder())), const SizedBox(height: 10),
+    SizedBox(width: double.infinity, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: selectedColor), onPressed: () { var m = RegExp(r'([A-Z]{1,2})([a-g][1-8])(?:R(\d+))?([x\-])([a-g][1-8])').allMatches(_expCtrl.text); if (m.isEmpty) return; setState(() { expMoves = m.map((e) => e.group(0)!).toList(); mode = 'explorer'; expIdx = 0; showExp = false; _reset(); }); }, child: const Text('Load Game', style: TextStyle(color: Colors.white)))),
+    SizedBox(width: double.infinity, child: ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[800]), onPressed: () => setState(() => showExp = false), child: const Text('Cancel', style: TextStyle(color: Colors.white))))
+  ]))));
+}
+
+class PiecePainter extends CustomPainter {
+  final PieceData p; final bool sel, imm; final double scl, br;
+  PiecePainter(this.p, this.sel, this.imm, this.scl, [this.br = 0]);
+  @override void paint(Canvas c, Size s) {
+    if (imm) c.saveLayer(Offset.zero & s, Paint()..colorFilter = const ColorFilter.matrix([0.21, 0.71, 0.07, 0, 0, 0.21, 0.71, 0.07, 0, 0, 0.21, 0.71, 0.07, 0, 0, 0, 0, 0, 1, 0]));
+    double cx = s.width / 2, cy = s.height / 2, cw = s.width;
+    c.translate(cx, cy); c.rotate((p.team == 'orange' ? 180 + p.rotation : p.rotation) * math.pi / 180); c.scale(scl); c.translate(-cx, -cy);
+    var th = p.team == 'purple' ? purpleTheme : orangeTheme; var conf = CONFIG_BY_ID[p.id]!;
+    
+    for (String dir in conf.directions) {
+      c.save(); c.translate(cx, cy); c.rotate({'n':0.0, 'ne':45.0, 'e':90.0, 'se':135.0, 's':180.0, 'sw':225.0, 'w':270.0, 'nw':315.0}[dir]! * math.pi / 180);
+      c.drawRRect(RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(0, -cw * 0.21), width: cw * 0.06, height: cw * 0.42), const Radius.circular(2)), Paint()..shader = ui.Gradient.linear(Offset(0, -cw * 0.42), const Offset(0, 0),[metalShadowColor, const Color(0xFF2A2E37)]));
+      bool jmp = conf.jumpDirections.contains(dir), pwr = p.id == 'DP' && dir == 'n';
+      Paint nBg = Paint(), nBord = Paint()..style = PaintingStyle.stroke..strokeWidth = 1.0;
+      if (sel && !jmp && !pwr) { nBg.shader = ui.Gradient.radial(Offset(-cw * 0.02, -cw * 0.375), cw * 0.1,[th.glow, th.color]); nBord.color = th.glow; c.drawCircle(Offset(0, -cw * 0.355), cw * 0.085, Paint()..color = th.color..maskFilter = MaskFilter.blur(BlurStyle.outer, ui.lerpDouble(10, 15, br)!)); }
+      else if (sel && jmp) { nBg.shader = ui.Gradient.radial(Offset(0, -cw * 0.355), cw * 0.085,[metalShadowColor, Colors.black]); nBord.color = th.glow; c.drawCircle(Offset(0, -cw * 0.355), cw * 0.085, Paint()..color = th.color..maskFilter = MaskFilter.blur(BlurStyle.outer, ui.lerpDouble(10, 15, br)!)); }
+      else if (sel && pwr) { nBg.shader = ui.Gradient.radial(Offset(-cw * 0.01, -cw * 0.365), cw * 0.085,[Colors.white, th.glow, th.color], [0, 0.55, 1]); nBord.color = Colors.white; c.drawCircle(Offset(0, -cw * 0.355), cw * 0.085, Paint()..color = th.color..maskFilter = MaskFilter.blur(BlurStyle.outer, ui.lerpDouble(10, 15, br)!)); }
+      else { nBg.shader = ui.Gradient.radial(Offset(-cw * 0.02, -cw * 0.375), cw * 0.1, [metalHighlightColor, metalBaseColor]); nBord.color = metalShadowColor; }
+      c.drawCircle(Offset(0, -cw * 0.355), cw * 0.085, nBg); c.drawCircle(Offset(0, -cw * 0.355), cw * 0.085, nBord);
+      c.restore();
     }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 80, left: 10, right: 10),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.05),
-        border: Border.all(color: borderColor),
-        borderRadius: BorderRadius.circular(5),
-      ),
-      child: Row(
-        children:[
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              reverse: true, // Always show latest
-              child: Text(text, style: const TextStyle(fontFamily: 'monospace', color: Colors.white70)),
-            ),
-          ),
-          const SizedBox(width: 10),
-          if (gameMode != 'explorer') ...[
-            _actionBtn('Copy', () => Clipboard.setData(ClipboardData(text: text))),
-            const SizedBox(width: 5),
-            _actionBtn('Explorer', () => setState(() => showExplorerModal = true)),
-          ] else ...[
-            _actionBtn('<', () => handleUndo()),
-            const SizedBox(width: 5),
-            _actionBtn('>', _nextExplorerMove),
-            const SizedBox(width: 5),
-            _actionBtn('Exit', () => setState(() { gameMode = 'bot'; resetGame(); })),
-          ]
-        ],
-      ),
-    );
+    double cs = p.type == 'D' ? 0.25 : (p.type == 'C' ? 0.40 : 0.20); Rect cr = Rect.fromCenter(center: Offset(cx, cy), width: cw * cs, height: cw * cs);
+    Paint cBg = Paint()..shader = ui.Gradient.linear(cr.topLeft, cr.bottomRight, [metalHighlightColor, metalBaseColor]), cBd = Paint()..style = PaintingStyle.stroke..strokeWidth = 1.0..color = metalShadowColor;
+    c.save(); if (p.type == 'D') { c.translate(cx, cy); c.rotate(45 * math.pi / 180); c.translate(-cx, -cy); c.drawRect(cr, cBg); c.drawRect(cr, cBd); } else { c.drawCircle(Offset(cx, cy), cw * cs / 2, cBg); c.drawCircle(Offset(cx, cy), cw * cs / 2, cBd); } c.restore();
+    
+    double gs = cs * 0.6; Rect gr = Rect.fromCenter(center: Offset(cx, cy), width: cw * gs, height: cw * gs);
+    Paint gBg = Paint()..shader = ui.Gradient.radial(Offset(cx - gr.width * 0.2, cy - gr.height * 0.2), gr.width, [th.glow, th.color]);
+    if (sel) c.drawCircle(Offset(cx, cy), gr.width / 2, Paint()..color = th.color..maskFilter = MaskFilter.blur(BlurStyle.outer, ui.lerpDouble(12, 18, br)!));
+    c.save(); if (p.type == 'D') { c.translate(cx, cy); c.rotate(45 * math.pi / 180); c.translate(-cx, -cy); c.drawRRect(RRect.fromRectAndRadius(gr, const Radius.circular(2)), gBg); } else { c.drawCircle(Offset(cx, cy), cw * gs / 2, gBg); } c.restore();
+    if (imm) c.restore();
   }
-
-  Widget _actionBtn(String label, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(colors:[Color(0xFF6A5A87), Color(0xFF3B314A)]),
-          border: Border.all(color: borderColor),
-          borderRadius: BorderRadius.circular(3),
-        ),
-        child: Text(label, style: const TextStyle(fontSize: 12)),
-      ),
-    );
-  }
-
-  Widget _buildSettingsModal() {
-    return Container(
-      color: Colors.black87,
-      child: Center(
-        child: Container(
-          width: 350,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(color: const Color(0xFF1A1A1C), border: Border.all(color: borderColor)),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children:[
-              const Text('Game Mode', style: TextStyle(fontSize: 24)),
-              const SizedBox(height: 10),
-              _modeBtn('2-Player (Local)', '2-player'),
-              _modeBtn('1-Player (vs Bot)', 'bot'),
-              _modeBtn('Bot vs Bot', 'bot-vs-bot'),
-              const Divider(color: Colors.white24, height: 30),
-              const Text('AI Depth & Time', style: TextStyle(color: selectedColor)),
-              _sliderRow('Purple Depth: $depthPurple', depthPurple.toDouble(), 1, 5, (v) => setState(() => depthPurple = v.toInt())),
-              _sliderRow('Purple Time (ms): $timePurple', timePurple.toDouble(), 100, 3000, (v) => setState(() => timePurple = v.toInt())),
-              _sliderRow('Orange Depth: $depthOrange', depthOrange.toDouble(), 1, 5, (v) => setState(() => depthOrange = v.toInt())),
-              _sliderRow('Orange Time (ms): $timeOrange', timeOrange.toDouble(), 100, 3000, (v) => setState(() => timeOrange = v.toInt())),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[800]),
-                onPressed: () => setState(() => showSettingsModal = false),
-                child: const Text('Close', style: TextStyle(color: Colors.white)),
-              )
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _modeBtn(String label, String mode) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
-      child: SizedBox(
-        width: double.infinity,
-        child: ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: gameMode == mode ? selectedColor : const Color(0xFF3B314A),
-            shape: const RoundedRectangleBorder(),
-          ),
-          onPressed: () {
-            setState(() { gameMode = mode; if (mode == 'bot') botTeam = 'orange'; showSettingsModal = false; resetGame(); });
-          },
-          child: Text(label, style: const TextStyle(color: Colors.white, fontFamily: 'Georgia', fontStyle: FontStyle.italic)),
-        ),
-      ),
-    );
-  }
-
-  Widget _sliderRow(String label, double val, double min, double max, Function(double) onChanged) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children:[
-        Text(label, style: const TextStyle(fontSize: 12)),
-        Slider(value: val, min: min, max: max, activeColor: selectedColor, onChanged: onChanged),
-      ],
-    );
-  }
-
-  Widget _buildExplorerModal() {
-    return Container(
-      color: Colors.black87,
-      child: Center(
-        child: Container(
-          width: 350, padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(color: const Color(0xFF1A1A1C), border: Border.all(color: borderColor)),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children:[
-              const Text('Game Explorer', style: TextStyle(fontSize: 24)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _explorerController,
-                maxLines: 5,
-                style: const TextStyle(fontFamily: 'monospace', color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Paste notation here...',
-                  hintStyle: TextStyle(color: Colors.white38),
-                  filled: true, fillColor: Colors.black54,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 15),
-              SizedBox(width: double.infinity, child: ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: selectedColor, shape: const RoundedRectangleBorder()),
-                onPressed: _loadExplorerGame,
-                child: const Text('Load Game', style: TextStyle(color: Colors.white)),
-              )),
-              const SizedBox(height: 5),
-              SizedBox(width: double.infinity, child: ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[800], shape: const RoundedRectangleBorder()),
-                onPressed: () => setState(() => showExplorerModal = false),
-                child: const Text('Cancel', style: TextStyle(color: Colors.white)),
-              )),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  @override bool shouldRepaint(PiecePainter o) => o.p != p || o.sel != sel || o.imm != imm || o.scl != scl || o.br != br;
 }
